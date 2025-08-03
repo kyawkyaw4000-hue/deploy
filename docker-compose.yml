@@ -1,22 +1,40 @@
+version: "3.9"
+
 services:
   dashboard:
-    container_name: dashboard
+    container_name: hummingbot-dashboard
     image: hummingbot/dashboard:latest
     ports:
       - "8501:8501"
     environment:
-        - AUTH_SYSTEM_ENABLED=False
-        - BACKEND_API_HOST=hummingbot-api
-        - BACKEND_API_PORT=8000
-        - BACKEND_API_USERNAME=admin
-        - BACKEND_API_PASSWORD=admin
+      # ✅ 啟用 Dashboard 登入權限（改為 true 才使用 credentials.yml)
+      - AUTH_SYSTEM_ENABLED=true
+      # ✅ 對應後端服務名稱 consistent with service name
+      - BACKEND_API_HOST=backend-api
+      - BACKEND_API_PORT=8000
+      # → 若你想讓 Dashboard 能透過 .env 傳 credentials.yml 檔中的 admin 帳號設定
+      - APP_MODE=${APP_MODE:-prod}
+      - CONFIG_PASSWORD=${CONFIG_PASSWORD}
+      - COOKIES_KEY=${COOKIES_KEY}
+      - COOKIES_NAME=${COOKIES_NAME}
     volumes:
-      - ./credentials.yml:/home/dashboard/credentials.yml
-      - ./pages:/home/dashboard/frontend/pages
+      - ./credentials.yml:/home/dashboard/credentials.yml:ro
+      - ./pages:/home/dashboard/frontend/pages:ro
+      # 選用：讀取 .env 提供給 Dashboard UI
+      - ./.env:/home/dashboard/.env:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_st/signin" ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      - backend-api
     networks:
-        - emqx-bridge
-  hummingbot-api:
-    container_name: hummingbot-api
+      - emqx-bridge
+
+  backend-api:
+    container_name: hummingbot-backend-api
     image: hummingbot/hummingbot-api:latest
     ports:
       - "8000:8000"
@@ -26,13 +44,21 @@ services:
     env_file:
       - .env
     environment:
-      # Override specific values for Docker networking
+      # 🚨 請務必更新 BROKER_HOST 與資料庫設定確實對應 network
       - BROKER_HOST=emqx
       - DATABASE_URL=postgresql+asyncpg://hbot:hummingbot-api@postgres:5432/hummingbot_api
     networks:
       - emqx-bridge
     depends_on:
       - postgres
+      - emqx
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   emqx:
     container_name: hummingbot-broker
     image: emqx:5
@@ -42,25 +68,25 @@ services:
       - EMQX_HOST=node1.emqx.local
       - EMQX_CLUSTER__DISCOVERY_STRATEGY=static
       - EMQX_CLUSTER__STATIC__SEEDS=[emqx@node1.emqx.local]
-      - EMQX_LOADED_PLUGINS="emqx_recon,emqx_retainer,emqx_management,emqx_dashboard"
+      - EMQX_LOADED_PLUGINS=emqx_recon,emqx_retainer,emqx_management,emqx_dashboard
     volumes:
       - emqx-data:/opt/emqx/data
       - emqx-log:/opt/emqx/log
       - emqx-etc:/opt/emqx/etc
     ports:
-      - "1883:1883"  # mqtt:tcp
-      - "8883:8883"  # mqtt:tcp:ssl
-      - "8083:8083"  # mqtt:ws
-      - "8084:8084"  # mqtt:ws:ssl
-      - "8081:8081"  # http:management
-      - "18083:18083"  # http:dashboard
-      - "61613:61613"  # web-stomp gateway
+      - "1883:1883"
+      - "8883:8883"
+      - "8083:8083"
+      - "8084:8084"
+      - "8081:8081"
+      - "18083:18083"
+      - "61613:61613"
     networks:
       emqx-bridge:
         aliases:
           - node1.emqx.local
     healthcheck:
-      test: [ "CMD", "/opt/emqx/bin/emqx_ctl", "status" ]
+      test: ["CMD", "/opt/emqx/bin/emqx_ctl", "status"]
       interval: 5s
       timeout: 25s
       retries: 5
@@ -80,7 +106,7 @@ services:
     networks:
       - emqx-bridge
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U hbot -d hummingbot_api"]
+      test: ["CMD-SHELL", "pg_isready -U hbot -d hummingbot_api" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -90,7 +116,7 @@ networks:
     driver: bridge
 
 volumes:
-  emqx-data: { }
-  emqx-log: { }
-  emqx-etc: { }
-  postgres-data: { }
+  emqx-data: {}
+  emqx-log: {}
+  emqx-etc: {}
+  postgres-data: {}
